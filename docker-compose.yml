@@ -1,0 +1,28 @@
+version: '2'
+
+services:
+  postgres:
+    image: postgis/postgis:13-3.0-alpine
+    user: root
+    environment:
+      POSTGRES_USER: 'postgres'
+      POSTGRES_DB: 'ratp'
+      POSTGRES_PASSWORD: 'secretpassword'
+    volumes:
+      - ./data/postgresql:/var/lib/postgressql/
+      - /etc/passwd:/etc/passwd:ro
+    ports:
+      - '5432:5432'
+    networks:
+      - postgres
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: 'your.email@domain.com'
+      PGADMIN_DEFAULT_PASSWORD: 'secretpassword'
+    ports:
+      - '80:80'
+    networks:
+      - postgres
+networks:
+  postgres:
