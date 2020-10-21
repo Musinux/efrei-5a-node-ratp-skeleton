@@ -61,6 +61,12 @@ async function run () {
   await postgresStore.init(config.postgres)
 
   await dropEverything()
+
+  await postgresStore.client.query('CREATE EXTENSION IF NOT EXISTS postgis')
+  await postgresStore.client.query('CREATE EXTENSION IF NOT EXISTS fuzzystrmatch')
+  await postgresStore.client.query('CREATE EXTENSION IF NOT EXISTS postgis_tiger_geocoder')
+  await postgresStore.client.query('CREATE EXTENSION IF NOT EXISTS postgis_topology')
+
   const models = [
     Agency,
     Calendar,
