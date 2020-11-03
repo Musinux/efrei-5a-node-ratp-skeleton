@@ -2,7 +2,7 @@
   <div id="map-container">
     <input v-model="startStop" type="text" placeholder="Start Stop">
     <input v-model="endStop" type="text" placeholder="End Stop">
-    <button @click="start" :disabled="running">
+    <button :disabled="running" @click="start">
       Get the route
     </button>
     <span v-if="time">{{ time }} minutes de trajet</span>
@@ -176,7 +176,7 @@ export default {
      * updates the graph
      */
     updateNodes (nodes) {
-      let lines = []
+      const lines = []
       // TODO: draw new lines
       if (lines.length) {
         this.linesLayer.getSource().addFeatures(lines)
