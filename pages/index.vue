@@ -2,139 +2,207 @@
   <div id="map-container">
     <input v-model="startStop" type="text" placeholder="Start Stop">
     <input v-model="endStop" type="text" placeholder="End Stop">
-    <button @click="start">
+    <button @click="start" :disabled="running">
       Get the route
     </button>
     <span v-if="time">{{ time }} minutes de trajet</span>
+    <span v-if="noPath">Aucun chemin trouvé</span>
     <span v-if="timetaken">Calculé en {{ timetaken }} secondes</span>
     <div id="map" />
   </div>
 </template>
 
 <script>
-/* global OpenLayers */
+import 'ol/ol.css'
+import Map from 'ol/Map'
+import View from 'ol/View'
+import { fromLonLat } from 'ol/proj'
+import { defaults as defaultControls } from 'ol/control'
+import Feature from 'ol/Feature'
+import OSM from 'ol/source/OSM'
+import TileLayer from 'ol/layer/Tile'
+import VectorLayer from 'ol/layer/Vector'
+import VectorSource from 'ol/source/Vector'
+import { Circle, LineString } from 'ol/geom'
+import { Style, Stroke, Fill, Text } from 'ol/style'
+
+function setStyle (color) {
+  return new Style({
+    stroke: new Stroke({ color, opacity: 1, width: 2 }),
+    fill: new Fill({ opacity: 0.2, color })
+  })
+}
+
+const visitedStyle = setStyle('green')
+
+const goodPathStyle = setStyle('red')
+
+const circleStyle = new Style({
+  fill: new Fill({ color: 'rgba(200, 0, 0, 0.2)' }),
+  stroke: new Stroke({ color: 'red', width: 3 }),
+  text: new Text({
+    font: '15px Calibri,sans-serif',
+    fill: new Fill({ opacity: 0.2, color: 'rgba(150, 0, 0, 0.8)' }),
+    stroke: new Stroke({ color: 'red' }),
+    color: 'red'
+  })
+})
+
 export default {
   data: () => ({
-    startStop: '',
-    endStop: '',
-    time: 0,
-    timetaken: 0,
-    standardStyle: {
-      strokeColor: '${color}', // eslint-disable-line
-      fontColor: 'red',
-      strokeOpacity: 1,
-      strokeWidth: 2,
-      fillOpacity: 0.2,
-      fillColor: '${color}' // eslint-disable-line
-    },
-    alreadyDefinedPaths: [],
-    dotsLayer: null,
+    startStop: 'MAIRIE DE LEVALLOIS', // the default start station name
+    endStop: "MAIRIE D'ALFORTVILLE", // the default end station name
+    running: false, // is the algorithm running ?
+    listOfNodes: [], // the list of all the nodes
+    map: null, // the map object
+    time: 0, // the time it takes to go from point a to point b
+    timetaken: 0, // the time taken by the algorithm (run time)
+    noPath: false, // maybe the algorithm didn't find any path ?
+    stationsLayer: null,
     linesLayer: null,
-    finalPathLayer: null
+    goodPathLayer: null,
+    stopUpdating: false
   }),
   mounted () {
-    this.map = new OpenLayers.Map('map', {
-      controls: [
-        new OpenLayers.Control.Navigation(),
-        new OpenLayers.Control.PanZoomBar(),
-        new OpenLayers.Control.Attribution()
+    this.linesLayer = new VectorLayer({
+      source: new VectorSource(),
+      style: visitedStyle
+    })
+
+    this.goodPathLayer = new VectorLayer({
+      source: new VectorSource(),
+      style: goodPathStyle
+    })
+
+    this.stationsLayer = new VectorLayer({
+      source: new VectorSource(),
+      style (feature) {
+        circleStyle.getText().setText(feature.get('name'))
+        return circleStyle
+      }
+    })
+    this.map = new Map({
+      target: 'map',
+      layers: [
+        new TileLayer({ source: new OSM() }),
+        this.linesLayer,
+        this.goodPathLayer,
+        this.stationsLayer
       ],
-      maxExtent: new OpenLayers.Bounds(),
+      view: new View({
+        center: fromLonLat([2.3522, 48.8566]),
+        zoom: 12,
+        projection: 'EPSG:900913'
+      }),
+      controls: defaultControls(),
       numZoomLevels: 19,
-      units: 'm',
-      projection: new OpenLayers.Projection('EPSG:900913'),
-      displayProjection: this.epsg4326()
+      units: 'm'
     })
-
-    // Define the map layer
-    // Here we use a predefined layer that will be kept up to date with URL changes
-    this.map.addLayer(new OpenLayers.Layer.OSM.Mapnik())
-    this.map.zoomToMaxExtent()
-
-    this.linesLayer = new OpenLayers.Layer.Vector('', {
-      styleMap: new OpenLayers.StyleMap({
-        ...this.standardStyle,
-        strokeColor: 'green'
-      })
-    })
-    this.map.addLayer(this.linesLayer)
-
-    this.finalPathLayer = new OpenLayers.Layer.Vector('', {
-      styleMap: new OpenLayers.StyleMap({
-        ...this.standardStyle,
-        strokeColor: 'red'
-      })
-    })
-    this.map.addLayer(this.finalPathLayer)
-    this.dotsLayer = new OpenLayers.Layer.Vector('', {
-      styleMap: new OpenLayers.StyleMap({
-        ...this.standardStyle,
-        label: '${name}' // eslint-disable-line
-      })
-    })
-    this.map.addLayer(this.dotsLayer)
-
-    this.setCenter()
   },
   methods: {
     async start () {
-      // TODO
+      this.running = true
+      const startStop = encodeURIComponent(this.startStop)
+      const endStop = encodeURIComponent(this.endStop)
+      const { nodes, id } = await this.$axios.$get(`/api/route?start=${startStop}&stop=${endStop}`)
+
+      if (!nodes) { return }
+
+      this.updateNodes(nodes)
+
+      const inter = setInterval(async () => {
+        try {
+          const { nodes, done, timetaken, path } = await this.$axios.$get(`/api/route/updates/${id}`)
+
+          if (done) {
+            clearInterval(inter)
+            console.log('goodPath', path)
+            this.traceGoodPath(path)
+            this.calculateTime(path)
+            this.timetaken = timetaken
+            this.running = false
+          }
+
+          await this.updateNodes(nodes)
+        } catch (err) {
+          console.log('error', err)
+          clearInterval(inter)
+          this.running = false
+        }
+      }, 2000)
     },
 
-    epsg4326 () {
-      return new OpenLayers.Projection('EPSG:4326')
+    calculateTime (path) {
+      if (!path.length) {
+        this.noPath = true
+        return
+      }
+      console.log('path', path)
+      this.time = ((path[path.length - 1].distance - path[0].distance) / 60)
     },
 
-    setCenter (lat, lng, zoom) {
-      const lonlat = new OpenLayers.LonLat(lng || 2.3522, lat || 48.8566)
-        .transform(this.epsg4326(), this.map.getProjectionObject())
-      this.map.setCenter(lonlat, zoom || 12)
+    traceGoodPath (nodes) {
+      let end = null
+      console.log('trace path !')
+      nodes.forEach((node) => {
+        const stop = node.stop
+        const start = [stop.longitude, stop.latitude]
+        console.log('stopname', stop.stop_name)
+        this.addStation(stop)
+        if (end) {
+          const line = this.genLineFeature(start, end)
+          this.goodPathLayer.getSource().addFeature(line)
+        }
+        end = [stop.longitude, stop.latitude]
+      })
     },
 
-    genLine (start, end, color = 'green') {
-      const startLonLat = new OpenLayers.LonLat(start[0], start[1]).transform(
-        this.epsg4326(),
-        this.map.getProjectionObject()
-      )
-      const startPoint = new OpenLayers.Geometry.Point(startLonLat.lon, startLonLat.lat)
-      const endLonLat = new OpenLayers.LonLat(end[0], end[1]).transform(
-        this.epsg4326(),
-        this.map.getProjectionObject()
-      )
-      const endPoint = new OpenLayers.Geometry.Point(endLonLat.lon, endLonLat.lat)
-      return new OpenLayers.Feature.Vector(new OpenLayers.Geometry.LineString([startPoint, endPoint]))
+    /**
+     * returns true if the lon/lat of start and stop of two paths are identical
+     */
+    compareCoords ([refStart, refStop], [start, stop]) {
+      return (refStart[0] === start[0] && refStart[1] === start[1] && refStop[0] === stop[0] && refStop[1] === stop[1]) ||
+        (refStart[0] === stop[0] && refStart[1] === stop[1] && refStop[0] === start[0] && refStop[1] === start[1])
     },
 
-    addLine (start, end, color = 'green') {
-      const line = this.genLine(start, end, color)
-      if (color === 'green') {
-        this.linesLayer.addFeatures([line])
-      } else {
-        this.finalPathLayer.addFeatures([line])
+    /**
+     * Can be useful to break from a big algorithm
+     */
+    timeout (ms) {
+      return new Promise(resolve => setTimeout(resolve, ms))
+    },
+
+    /**
+     * updates the graph
+     */
+    updateNodes (nodes) {
+      let lines = []
+      // TODO: draw new lines
+      if (lines.length) {
+        this.linesLayer.getSource().addFeatures(lines)
       }
     },
 
-    genCircle (lat, lng, radius, color, name) {
-      const lonLat = new OpenLayers.LonLat(lng, lat).transform(
-        this.epsg4326(),
-        this.map.getProjectionObject()
-      )
-
-      const point = new OpenLayers.Geometry.Point(lonLat.lon, lonLat.lat)
-
-      const circle = OpenLayers.Geometry.Polygon.createRegularPolygon(point, radius, 40, 0)
-
-      return new OpenLayers.Feature.Vector(circle, { name, color })
+    genLineFeature (start, end) {
+      return new Feature({
+        geometry: new LineString([
+          fromLonLat(start),
+          fromLonLat(end)
+        ])
+      })
     },
 
-    addCircle (lat, lng, radius, color, name) {
-      this.dotsLayer.addFeatures([this.genCircle(lat, lng, radius, color, name)])
+    genCircleFeature (lat, lng, name) {
+      return new Feature({
+        geometry: new Circle(fromLonLat([lng, lat]), 100),
+        name
+      })
     },
 
-    removeLayers () {
-      while (this.allLayers.length > 0) {
-        this.map.removeLayer(this.allLayers.pop())
-      }
+    addStation (stop) {
+      const circle = this.genCircleFeature(stop.latitude, stop.longitude, stop.stop_name)
+      this.stationsLayer.getSource()
+        .addFeature(circle)
     }
   }
 }
@@ -148,5 +216,9 @@ html, body {
 #__nuxt, #__layout, #__layout div, #map-container, #map {
   height: 100%;
   margin: 0;
+}
+
+.ol-attribution {
+  display: none
 }
 </style>
